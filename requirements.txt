@@ -1,0 +1,10 @@
+streamlit>=1.32.0
+openai>=1.30.0
+langgraph>=0.2.0
+langchain>=0.2.0
+langchain-openai>=0.1.0
+langchain-core>=0.2.0
+requests>=2.31.0
+sounddevice>=0.4.6
+numpy>=1.26.0
+scipy>=1.13.0
