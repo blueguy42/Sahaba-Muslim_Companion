@@ -134,23 +134,6 @@ def search_quran(query: str) -> str:
     return "\n".join(out)
 
 
-@tool
-def get_ayah_recitation_url(surah: int, ayah: int) -> str:
-    """Get the audio recitation URL for a specific Quran verse (Mishary Rashid recitation).
-    
-    Args:
-        surah: Surah number (1–114)
-        ayah: Ayah number within the surah
-    """
-    url = f"{QURAN_API_BASE}/ayah/{surah}:{ayah}/ar.alafasy"
-    data = _get(url)
-    _log_api("get_ayah_recitation_url", url, json.dumps(data.get("data", {})))
-    audio_url = data.get("data", {}).get("audio", "")
-    if audio_url:
-        return f"Recitation audio URL for ({surah}:{ayah}): {audio_url}"
-    return f"No recitation audio found for ({surah}:{ayah})"
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # PRAYER TIMES TOOLS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -424,7 +407,6 @@ ALL_TOOLS = [
     get_ayah_arabic,
     get_surah_arabic,
     search_quran,
-    get_ayah_recitation_url,
     get_prayer_times,
     get_next_prayer,
     get_prayer_times_hijri_month,

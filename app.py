@@ -163,12 +163,23 @@ html, body, [data-testid="stAppViewContainer"] {
     line-height: 2.2 !important;
 }
 
-/* ── Audio player ── */
+/* ── Audio player — play/stop only (no scrubber) ── */
 audio {
-    width: 100%;
+    width: 48px;
+    height: 36px;
     border-radius: 8px;
     margin-top: 0.5rem;
-    filter: invert(1) hue-rotate(180deg) brightness(0.9);
+    accent-color: #c8a96e;
+    /* Hide everything except the play button via clip */
+    overflow: hidden;
+    display: block;
+}
+/* Wrap in flex so the button stays left-aligned */
+.audio-btn-wrap {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.4rem;
 }
 
 /* ── Divider ── */
@@ -224,23 +235,22 @@ def today_str() -> str:
     return datetime.datetime.utcnow().strftime("%d-%m-%Y")
 
 
-def audio_autoplay_html(audio_bytes: bytes) -> str:
-    """Return an HTML audio element with autoplay from raw MP3 bytes."""
+def _audio_html(audio_bytes: bytes, autoplay: bool = False) -> str:
+    """Return a minimal play/stop-only audio button (no scrubber).
+    
+    Uses a tiny <audio> element clipped to just the play button width, plus
+    a visible label. Autoplay adds the autoplay attribute.
+    """
     b64 = base64.b64encode(audio_bytes).decode()
+    auto = "autoplay" if autoplay else ""
     return (
-        f'<audio autoplay controls style="width:100%;border-radius:8px;margin-top:0.5rem;">'
+        f'<div class="audio-btn-wrap">'
+        f'<audio {auto} controls '
+        f'style="width:48px;height:32px;border-radius:6px;overflow:hidden;accent-color:#c8a96e;">'
         f'<source src="data:audio/mp3;base64,{b64}" type="audio/mp3">'
         f'</audio>'
-    )
-
-
-def audio_manual_html(audio_bytes: bytes) -> str:
-    """Return a plain HTML audio element (no autoplay)."""
-    b64 = base64.b64encode(audio_bytes).decode()
-    return (
-        f'<audio controls style="width:100%;border-radius:8px;margin-top:0.5rem;">'
-        f'<source src="data:audio/mp3;base64,{b64}" type="audio/mp3">'
-        f'</audio>'
+        f'<span style="color:#8b949e;font-size:0.8rem;">Play / Pause</span>'
+        f'</div>'
     )
 
 
@@ -258,28 +268,6 @@ def extract_compass_url(text: str) -> tuple[str, str]:
     return text, ""
 
 
-def fetch_compass_image(url: str) -> bytes | None:
-    """Fetch compass image bytes from the aladhan API."""
-    try:
-        print(f"[APP] Fetching compass image: {url}")
-        resp = requests.get(url, timeout=15)
-        resp.raise_for_status()
-        return resp.content
-    except Exception as e:
-        print(f"[APP] Compass image fetch failed: {e}")
-        return None
-
-
-def fetch_recitation_audio(audio_url: str) -> bytes | None:
-    """Fetch recitation MP3 bytes from api.alquran.cloud CDN."""
-    try:
-        print(f"[APP] Fetching recitation audio: {audio_url}")
-        resp = requests.get(audio_url, timeout=20)
-        resp.raise_for_status()
-        return resp.content
-    except Exception as e:
-        print(f"[APP] Recitation audio fetch failed: {e}")
-        return None
 
 
 # ─── Session State Initialisation ────────────────────────────────────────────
@@ -288,10 +276,11 @@ def _init_state():
     defaults = {
         "config_mode": CONFIG_A,
         "messages": [],           # LangChain message objects
-        "display_turns": [],      # List of {"role", "content", "audio_bytes", "compass_url", "recitation_url"}
+        "display_turns": [],      # List of {"role", "content", "audio_bytes", "compass_bytes"}
         "agent": None,
         "agent_config": None,
         "auto_play": False,
+        "voice_recorder_key": 0,  # incremented to reset st.audio_input after each submission
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -410,149 +399,113 @@ if st.session_state.agent is None or st.session_state.agent_config != st.session
 for turn in st.session_state.display_turns:
     role = turn["role"]
     with st.chat_message(role, avatar="🧑" if role == "user" else "🌙"):
-        content = turn["content"]
+        # Use display_content for users (strips injected date context)
+        content = turn.get("display_content", turn["content"])
+        st.markdown(content)
 
-        # Render Arabic text with special class if detected (right-to-left block)
-        if "**" in content and any(
-            "\u0600" <= c <= "\u06ff" for c in content
-        ):
-            # Mixed Arabic/English — let markdown handle bold
-            st.markdown(content)
-        else:
-            st.markdown(content)
-
-        # Compass image (Config C)
-        if turn.get("compass_bytes"):
+        # Compass image (Config C only)
+        if turn.get("compass_url") and st.session_state.config_mode == CONFIG_C:
+            print(f"[APP] Rendering compass from URL: {turn['compass_url']}")
             st.markdown('<div class="compass-container">', unsafe_allow_html=True)
-            st.image(turn["compass_bytes"], caption="Qibla Compass", width=220)
+            st.image(turn["compass_url"], caption="Qibla Compass", width=220)
             st.markdown('</div>', unsafe_allow_html=True)
 
-        # Recitation audio player
-        if turn.get("recitation_bytes") and st.session_state.config_mode in (CONFIG_B, CONFIG_C):
-            st.markdown("**🎧 Quranic Recitation:**")
-            html = audio_manual_html(turn["recitation_bytes"])
-            st.markdown(html, unsafe_allow_html=True)
-
-        # TTS audio (Config B/C)
+        # TTS audio (Config B/C only)
         if turn.get("audio_bytes") and role == "assistant" and st.session_state.config_mode in (CONFIG_B, CONFIG_C):
             st.markdown("**🔊 Audio Response:**")
-            st.markdown(audio_manual_html(turn["audio_bytes"]), unsafe_allow_html=True)
+            st.markdown(_audio_html(turn["audio_bytes"]), unsafe_allow_html=True)
 
 
-# ── Voice Input (Config C only) ───────────────────────────────────────────
+# ── Voice Input (Config C only) — in-browser microphone ──────────────────
 
 voice_transcript = None
 if st.session_state.config_mode == CONFIG_C:
     st.markdown("---")
-    col1, col2 = st.columns([1, 4])
-    with col1:
-        voice_file = st.file_uploader(
-            "🎤 Upload voice message",
-            type=["mp3", "mp4", "wav", "m4a", "webm", "ogg"],
-            label_visibility="collapsed",
-            key="voice_uploader",
-        )
-    with col2:
-        st.markdown(
-            "<small style='color:#8b949e; line-height:2.5;'>Upload an audio file to speak to Sahaba</small>",
-            unsafe_allow_html=True,
-        )
-
-    if voice_file is not None:
-        audio_bytes = voice_file.read()
+    st.markdown(
+        "<small style='color:#8b949e;'>🎤 Record a voice message</small>",
+        unsafe_allow_html=True,
+    )
+    recorded_audio = st.audio_input(
+        "🎤 Record a voice message",
+        label_visibility="collapsed",
+        key=f"voice_recorder_{st.session_state.voice_recorder_key}",
+    )
+    if recorded_audio is not None:
+        audio_bytes = recorded_audio.read()
         with st.spinner("Transcribing audio…"):
-            voice_transcript = speech_to_text(audio_bytes, filename=voice_file.name)
+            voice_transcript = speech_to_text(audio_bytes, filename="recording.wav")
         st.success(f"🎤 You said: *{voice_transcript}*")
 
 
-# ── Text Chat Input ────────────────────────────────────────────────────────
+# ── Text Chat Input ──────────────────────────────────────────
 
 prompt_placeholder = {
     CONFIG_A: "Ask about Quran, prayer times, Islamic calendar… (include your location if needed)",
     CONFIG_B: "Ask about Quran, prayer times, Islamic calendar… (include your location if needed)",
-    CONFIG_C: "Ask me anything — or use the voice uploader above ✨",
+    CONFIG_C: "Type or record your message above ✨",
 }[st.session_state.config_mode]
 
 user_input = st.chat_input(prompt_placeholder)
 
 # Use voice transcript if available and no text typed
-final_input = voice_transcript if (voice_transcript and not user_input) else user_input
+base_input = voice_transcript if (voice_transcript and not user_input) else user_input
 
-# Inject selected date if Config C and date was chosen
-if final_input and st.session_state.config_mode == CONFIG_C and selected_date:
+# Separate display version (what the user sees) from agent version (includes date context)
+display_input = base_input
+agent_input = base_input
+
+# Inject selected date into agent input only (Config C)
+if agent_input and st.session_state.config_mode == CONFIG_C and selected_date:
     date_str = selected_date.strftime("%d-%m-%Y")
-    if date_str not in final_input:
-        final_input = f"[Date context: {date_str}] {final_input}"
+    if date_str not in agent_input:
+        agent_input = f"[Date context: {date_str}] {agent_input}"
 
 
-# ── Process input ──────────────────────────────────────────────────────────
+# ── Process input ──────────────────────────────────────────
 
-if final_input:
-    print(f"\n[APP] User input received (config={st.session_state.config_mode}): {final_input[:200]}")
+if display_input:
+    print(f"\n[APP] User input received (config={st.session_state.config_mode}): {agent_input[:200]}")
 
-    # Display user message
+    # Display user message (without date context prefix)
     with st.chat_message("user", avatar="🧑"):
-        st.markdown(final_input)
+        st.markdown(display_input)
 
     st.session_state.display_turns.append({
         "role": "user",
-        "content": final_input,
+        "content": agent_input,       # full input stored for potential replay
+        "display_content": display_input,  # clean version shown in chat
     })
 
-    # Run agent
+    # Run agent with full input (including date context)
     with st.chat_message("assistant", avatar="🌙"):
         with st.spinner("Sahaba is thinking…"):
             ai_text, updated_messages = run_agent(
                 graph=st.session_state.agent,
                 messages=st.session_state.messages,
-                user_input=final_input,
+                user_input=agent_input,
             )
             st.session_state.messages = updated_messages
 
         # Check for Qibla compass marker in response
         clean_text, compass_url = extract_compass_url(ai_text)
 
-        # Check for recitation URL in response
-        recitation_url = ""
-        recitation_marker = "Recitation audio URL for"
-        recitation_bytes = None
-        if recitation_marker in clean_text and "http" in clean_text:
-            # Extract URL from text
-            import re
-            url_match = re.search(r'https?://\S+\.mp3', clean_text)
-            if url_match:
-                recitation_url = url_match.group(0)
-
         # Render AI text
         st.markdown(clean_text)
 
-        # Fetch and show compass image (Config C)
-        compass_bytes = None
+        # Show compass image directly from URL (Config C only)
         if compass_url and st.session_state.config_mode == CONFIG_C:
-            with st.spinner("Loading Qibla compass…"):
-                compass_bytes = fetch_compass_image(compass_url)
-            if compass_bytes:
-                st.markdown('<div class="compass-container">', unsafe_allow_html=True)
-                st.image(compass_bytes, caption="Qibla Compass", width=220)
-                st.markdown('</div>', unsafe_allow_html=True)
+            print(f"[APP] Rendering compass from URL: {compass_url}")
+            st.markdown('<div class="compass-container">', unsafe_allow_html=True)
+            st.image(compass_url, caption="Qibla Compass", width=220)
+            st.markdown('</div>', unsafe_allow_html=True)
 
-        # Fetch and show recitation audio (Config B/C)
-        if recitation_url and st.session_state.config_mode in (CONFIG_B, CONFIG_C):
-            with st.spinner("Loading recitation audio…"):
-                recitation_bytes = fetch_recitation_audio(recitation_url)
-            if recitation_bytes:
-                st.markdown("**🎧 Quranic Recitation:**")
-                st.markdown(audio_manual_html(recitation_bytes), unsafe_allow_html=True)
-
-        # Generate TTS audio (Config B/C)
+        # Generate TTS audio (Config B/C only)
         tts_bytes = None
         if st.session_state.config_mode in (CONFIG_B, CONFIG_C) and clean_text.strip():
             with st.spinner("Generating audio response…"):
                 try:
-                    # Strip Arabic text from TTS input for cleaner speech
-                    import re as _re
-                    tts_text = _re.sub(r'[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff]+', '', clean_text)
-                    tts_text = tts_text.strip()[:1000]  # cap at 1000 chars for TTS
+                    # Send full text to TTS — gpt-4o-mini-tts handles Arabic natively
+                    tts_text = clean_text.strip()[:2000]  # cap to avoid very long TTS
                     if tts_text:
                         tts_bytes = text_to_speech(tts_text)
                 except Exception as e:
@@ -560,20 +513,20 @@ if final_input:
 
             if tts_bytes:
                 st.markdown("**🔊 Audio Response:**")
-                if st.session_state.auto_play:
-                    st.markdown(audio_autoplay_html(tts_bytes), unsafe_allow_html=True)
-                else:
-                    st.markdown(audio_manual_html(tts_bytes), unsafe_allow_html=True)
+                st.markdown(
+                    _audio_html(tts_bytes, autoplay=st.session_state.auto_play),
+                    unsafe_allow_html=True,
+                )
 
     # Store turn for re-render
     st.session_state.display_turns.append({
         "role": "assistant",
         "content": clean_text,
         "audio_bytes": tts_bytes,
-        "compass_bytes": compass_bytes,
-        "recitation_bytes": recitation_bytes,
+        "compass_url": compass_url,  # store URL directly, not bytes
     })
 
-    # Clear voice uploader after processing
+    # Clear voice recorder by cycling its key, then rerun
     if voice_transcript:
+        st.session_state.voice_recorder_key += 1
         st.rerun()
