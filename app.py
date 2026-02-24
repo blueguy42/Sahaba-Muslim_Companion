@@ -19,8 +19,10 @@ import streamlit as st
 from langchain_core.messages import HumanMessage, AIMessage
 
 from agent import create_agent, run_agent
-from config import CONFIG_A, CONFIG_B, CONFIG_C, CONFIG_LABELS
+from config import CONFIG_A, CONFIG_B, CONFIG_C, CONFIG_LABELS, GEOCODING_USER_AGENT
 from tts_stt import text_to_speech, speech_to_text
+from streamlit_geolocation import streamlit_geolocation
+import re
 
 # ─── Page Config ─────────────────────────────────────────────────────────────
 
@@ -199,6 +201,7 @@ hr {
     border: 2px solid #c8a96e;
     max-width: 220px;
     box-shadow: 0 0 20px rgba(200, 169, 110, 0.2);
+    background-color: white;
 }
 
 /* ── Toggle ── */
@@ -254,18 +257,24 @@ def _audio_html(audio_bytes: bytes, autoplay: bool = False) -> str:
     )
 
 
-def extract_compass_url(text: str) -> tuple[str, str]:
-    """Check if the agent response embeds a QIBLA_COMPASS_IMAGE marker.
+def extract_compass_url(new_messages: list) -> str:
+    """Find any compass URL from the ToolMessages in the new messages."""
+    for msg in new_messages:
+        if type(msg).__name__ == "ToolMessage" and getattr(msg, "name", "") == "get_qibla_compass_image_url":
+            # The tool should just return the URL
+            return str(msg.content).strip()
+    return ""
+
+def wrap_arabic_text(text: str) -> str:
+    """Wrap Arabic script in markdown with a styled span class for larger rendering."""
+    if not isinstance(text, str):
+        return text
+    # Match contiguous blocks containing Arabic characters 
+    pattern = r'([\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]+(?:[\s،؛؟\.\(\)\[\]«»0-9\-:]+[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]+)*)'
     
-    Returns (clean_text, compass_url_or_empty).
-    """
-    marker = "QIBLA_COMPASS_IMAGE:"
-    if marker in text:
-        parts = text.split(marker, 1)
-        clean = parts[0].strip()
-        url_part = parts[1].strip().split()[0]  # grab just the URL
-        return clean, url_part
-    return text, ""
+    # We use re.sub to wrap the matched sequences in <div class="arabic-text" dir="rtl">...</div>
+    return re.sub(pattern, r'<div class="arabic-text" dir="rtl">\1</div>', text)
+
 
 
 
@@ -321,26 +330,66 @@ with st.sidebar:
         st.session_state.display_turns = []
         st.rerun()
 
-    st.markdown("---")
+    
+    # ── Config info
+    mode = st.session_state.config_mode
+    info = {
+        CONFIG_A: "📝 Text only — no voice",
+        CONFIG_B: "🔊 Text & voice OUTPUT",
+        CONFIG_C: "🎤 Full multimodal — Text & voice INPUT/OUTPUT, visual Qibla compass, auto-location",
+    }
+    st.markdown(f"<small style='color:#8b949e;'>{info[mode]}</small>", unsafe_allow_html=True)
 
     # ── Audio controls (Config B and C)
     if st.session_state.config_mode in (CONFIG_B, CONFIG_C):
+        st.markdown("---")
         st.markdown("**Audio Settings**")
         st.session_state.auto_play = st.toggle(
             "Auto-play TTS response",
             value=st.session_state.auto_play,
         )
 
-    # ── Date picker (Config C)
+    # ── Date & Location picker (Config C)
     selected_date = None
+    user_location = None
     if st.session_state.config_mode == CONFIG_C:
         st.markdown("---")
-        st.markdown("**Date**")
+        st.markdown("**Date & Location**")
         selected_date = st.date_input(
             "Pick a date for prayer/calendar queries",
             value=datetime.datetime.utcnow(),
             label_visibility="collapsed",
         )
+        st.markdown("<small style='color:#8b949e;'>Location</small>", unsafe_allow_html=True)
+        user_location_type = st.radio("Location Mode", ["Manual", "Auto-detect (GPS)"], label_visibility="collapsed")
+        
+        if user_location_type == "Manual":
+            user_location = st.text_input("Enter your location", value="London, UK", label_visibility="collapsed")
+        else:
+            loc = streamlit_geolocation()
+            if loc and loc.get('latitude') is not None:
+                lat = loc['latitude']
+                lon = loc['longitude']
+                loc_key = f"{lat},{lon}"
+                if st.session_state.get('last_lat_lon') != loc_key:
+                    try:
+                        headers = {"User-Agent": GEOCODING_USER_AGENT}
+                        params = {"lat": lat, "lon": lon, "format": "jsonv2"}
+                        res = requests.get("https://nominatim.openstreetmap.org/reverse", params=params, headers=headers, timeout=5).json()
+                        address = res.get('address', {})
+                        city = address.get('city', address.get('town', address.get('village', 'Unknown')))
+                        country = address.get('country', 'Unknown')
+                        st.session_state.auto_location_name = f"{city}, {country}"
+                        st.session_state.last_lat_lon = loc_key
+                    except:
+                        st.session_state.auto_location_name = f"Lat: {lat:.4f}, Lon: {lon:.4f}"
+                        st.session_state.last_lat_lon = loc_key
+                
+                user_location = st.session_state.auto_location_name
+                st.caption(f"Detected Location: {user_location}")
+            else:
+                user_location = "London, UK"
+                st.caption("Waiting for GPS permission...")
 
     st.markdown("---")
 
@@ -350,16 +399,6 @@ with st.sidebar:
         st.session_state.display_turns = []
         st.session_state.agent = None
         st.rerun()
-
-    # ── Config info
-    st.markdown("---")
-    mode = st.session_state.config_mode
-    info = {
-        CONFIG_A: "📝 Text only — no audio output",
-        CONFIG_B: "🔊 Text + TTS audio output",
-        CONFIG_C: "🎤 Full multimodal — voice in, compass, audio",
-    }
-    st.markdown(f"<small style='color:#8b949e;'>{info[mode]}</small>", unsafe_allow_html=True)
 
 
 # ─── Main Panel ───────────────────────────────────────────────────────────────
@@ -401,14 +440,15 @@ for turn in st.session_state.display_turns:
     with st.chat_message(role, avatar="🧑" if role == "user" else "🌙"):
         # Use display_content for users (strips injected date context)
         content = turn.get("display_content", turn["content"])
-        st.markdown(content)
+        content_with_arabic = wrap_arabic_text(content)
+        st.markdown(content_with_arabic, unsafe_allow_html=True)
 
         # Compass image (Config C only)
         if turn.get("compass_url") and st.session_state.config_mode == CONFIG_C:
             print(f"[APP] Rendering compass from URL: {turn['compass_url']}")
-            st.markdown('<div class="compass-container">', unsafe_allow_html=True)
-            st.image(turn["compass_url"], caption="Qibla Compass", width=220)
-            st.markdown('</div>', unsafe_allow_html=True)
+            img_html = f'<div class="compass-container"><img src="{turn["compass_url"]}" alt="Qibla Compass" /></div>'
+            st.markdown(img_html, unsafe_allow_html=True)
+            st.caption("Qibla Compass")
 
         # TTS audio (Config B/C only)
         if turn.get("audio_bytes") and role == "assistant" and st.session_state.config_mode in (CONFIG_B, CONFIG_C):
@@ -454,11 +494,14 @@ base_input = voice_transcript if (voice_transcript and not user_input) else user
 display_input = base_input
 agent_input = base_input
 
-# Inject selected date into agent input only (Config C)
+# Inject selected date and location into agent input only (Config C)
 if agent_input and st.session_state.config_mode == CONFIG_C and selected_date:
     date_str = selected_date.strftime("%d-%m-%Y")
-    if date_str not in agent_input:
-        agent_input = f"[Date context: {date_str}] {agent_input}"
+    loc_str = user_location if user_location else "Unknown"
+    
+    # only prefix if not already added to avoid duplication (just a safety check)
+    if "[Date context:" not in agent_input:
+        agent_input = f"[Date context: {date_str} | Location context: {loc_str}] {agent_input}"
 
 
 # ── Process input ──────────────────────────────────────────
@@ -479,6 +522,7 @@ if display_input:
     # Run agent with full input (including date context)
     with st.chat_message("assistant", avatar="🌙"):
         with st.spinner("Sahaba is thinking…"):
+            old_msg_len = len(st.session_state.messages)
             ai_text, updated_messages = run_agent(
                 graph=st.session_state.agent,
                 messages=st.session_state.messages,
@@ -486,18 +530,21 @@ if display_input:
             )
             st.session_state.messages = updated_messages
 
-        # Check for Qibla compass marker in response
-        clean_text, compass_url = extract_compass_url(ai_text)
+        # Check for Qibla compass tool calls in the newly generated messages
+        new_msgs = updated_messages[old_msg_len:]
+        compass_url = extract_compass_url(new_msgs)
 
         # Render AI text
-        st.markdown(clean_text)
+        clean_text = ai_text
+        clean_text_with_arabic = wrap_arabic_text(clean_text)
+        st.markdown(clean_text_with_arabic, unsafe_allow_html=True)
 
         # Show compass image directly from URL (Config C only)
         if compass_url and st.session_state.config_mode == CONFIG_C:
             print(f"[APP] Rendering compass from URL: {compass_url}")
-            st.markdown('<div class="compass-container">', unsafe_allow_html=True)
-            st.image(compass_url, caption="Qibla Compass", width=220)
-            st.markdown('</div>', unsafe_allow_html=True)
+            img_html = f'<div class="compass-container"><img src="{compass_url}" alt="Qibla Compass" /></div>'
+            st.markdown(img_html, unsafe_allow_html=True)
+            st.caption("Qibla Compass")
 
         # Generate TTS audio (Config B/C only)
         tts_bytes = None

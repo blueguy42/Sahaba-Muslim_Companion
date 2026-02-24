@@ -29,6 +29,6 @@ CONFIG_C = "C"  # Full Multimodal
 
 CONFIG_LABELS = {
     CONFIG_A: "A — Text Only",
-    CONFIG_B: "B — Text + Audio",
+    CONFIG_B: "B — Text & Audio Output",
     CONFIG_C: "C — Full Multimodal",
 }

@@ -372,7 +372,7 @@ def get_qibla_compass_image_url(latitude: float, longitude: float) -> str:
     """
     url = f"{ALADHAN_API_BASE}/qibla/{latitude}/{longitude}/compass"
     _log_api("get_qibla_compass_image_url", url, f"lat={latitude}, lon={longitude}")
-    return f"QIBLA_COMPASS_IMAGE:{url}"
+    return url
 
 
 # ══════════════════════════════════════════════════════════════════════════════
