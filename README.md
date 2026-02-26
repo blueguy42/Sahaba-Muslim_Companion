@@ -1,5 +1,8 @@
 # Sahaba — Islamic AI Assistant
 
+<img width="1458" height="789" alt="image" src="https://github.com/user-attachments/assets/2b28d3b5-02f4-499e-8562-e5506bff39f0" />
+
+
 A sophisticated Islamic assistant built with Streamlit and powered by OpenAI's GPT models. This application provides users with accurate Islamic information, prayer times, Qibla direction, Quranic verses, and more through an intuitive conversational interface.
 
 ## 🌟 Features
