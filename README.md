@@ -36,7 +36,7 @@ A sophisticated Islamic assistant built with Streamlit and powered by OpenAI's G
 
    ```bash
    git clone <repository-url>
-   cd Sahaba-Muslim_Companion
+   cd Sahaba
    ```
 
 2. **Install dependencies**
@@ -71,7 +71,7 @@ A sophisticated Islamic assistant built with Streamlit and powered by OpenAI's G
 ## 🏗️ Project Structure
 
 ```
-Sahaba-Muslim_Companion/
+Sahaba/
 ├── app.py              # Main Streamlit application
 ├── agent.py            # LangGraph ReAct agent implementation
 ├── api_tools.py        # External API integration tools
